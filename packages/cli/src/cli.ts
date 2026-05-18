@@ -28,7 +28,12 @@ console.log(
 console.log(chalk.gray(`  Build full-stack apps with ZERO backend. v${VERSION}\n`));
 
 async function main() {
+  console.log(chalk.cyan("Starting ZerithDB CLI...\n"));
+  console.log(chalk.gray("Checking connectivity..."));
+
   await checkConnectivity();
+
+  console.log(chalk.green("Connectivity check passed.\n"));
 
   program
     .name("zerithdb")
@@ -78,6 +83,16 @@ async function main() {
 }
 
 main().catch((err) => {
+
+  console.error(chalk.red("\nUnexpected CLI error"));
+
+  if (err instanceof Error) {
+    console.error(chalk.red(err.message));
+  } else {
+    console.error(chalk.red(String(err)));
+  }
+
   console.error(chalk.red("CLI Error:"), err);
+
   process.exit(1);
 });
