@@ -228,8 +228,18 @@ function castValue(
   val: string,
   schemaContext?: Record<string, "string" | "number" | "boolean">
 ): string | number | boolean {
-  // Gracefully handle undefined schemaContext
-  const type = schemaContext ? schemaContext[field] : undefined;
+  if (val === null || val === undefined) {
+    return "";
+  }
+
+  // Gracefully handle undefined or invalid schemaContext
+  const hasValidSchema =
+    schemaContext && typeof schemaContext === "object" && !Array.isArray(schemaContext);
+  const type = hasValidSchema ? schemaContext[field] : undefined;
+
+  if (type === "string") {
+    return val;
+  }
 
   if (type === "number") {
     const num = Number(val);
@@ -244,9 +254,14 @@ function castValue(
   if (val === "true" || val === "false") {
     return val === "true";
   }
-  const num = Number(val);
-  if (!isNaN(num) && val.trim() !== "") {
-    return num;
+
+  const trimmed = val.trim();
+  const num = Number(trimmed);
+  if (!isNaN(num) && trimmed !== "" && Number.isFinite(num)) {
+    // Avoid casting phone numbers, zip codes with leading zeros (except single "0")
+    if (trimmed.length === 1 || !trimmed.startsWith("0")) {
+      return num;
+    }
   }
 
   return val;
@@ -278,19 +293,32 @@ export async function translateNaturalQuery(
     );
   }
 
+  // Options Validation
+  if (options !== undefined && options !== null) {
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new ZerithDBError(
+        ErrorCode.SDK_INVALID_CONFIG,
+        "Options must be a valid configuration object"
+      );
+    }
+
+    if (options.provider && !["local", "ollama", "openai"].includes(options.provider)) {
+      throw new ZerithDBError(
+        ErrorCode.SDK_INVALID_CONFIG,
+        `Invalid query translation provider: '${options.provider}'. Must be 'local', 'ollama', or 'openai'.`
+      );
+    }
+
+    if (options.provider === "openai" && !options.apiKey) {
+      throw new ZerithDBError(
+        ErrorCode.SDK_INVALID_CONFIG,
+        "API Key is required for OpenAI query translation provider"
+      );
+    }
+  }
+
   const validatedOptions = options || {};
   const provider = validatedOptions.provider || "local";
-
-  // Validate Provider enum configurations
-  if (
-    validatedOptions.provider &&
-    !["local", "ollama", "openai"].includes(validatedOptions.provider)
-  ) {
-    throw new ZerithDBError(
-      ErrorCode.SDK_INVALID_CONFIG,
-      `Invalid query translation provider: '${validatedOptions.provider}'. Must be 'local', 'ollama', or 'openai'.`
-    );
-  }
 
   if (provider === "ollama") {
     const endpoint = validatedOptions.endpoint || "http://localhost:11434";
@@ -339,11 +367,12 @@ Your output MUST be a single valid JSON object. Do not include markdown code for
     const model = validatedOptions.model || "gpt-3.5-turbo";
     const apiKey = validatedOptions.apiKey;
 
+    // Redundant guard since options validation catches this, but kept for absolute safety
     if (!apiKey) {
-      console.warn(
-        "[QueryTranslator] API Key not provided for OpenAI provider. Falling back to offline heuristics."
+      throw new ZerithDBError(
+        ErrorCode.SDK_INVALID_CONFIG,
+        "API Key is required for OpenAI query translation provider"
       );
-      return parseOfflineNaturalQuery(prompt, validatedOptions.schemaContext);
     }
 
     try {

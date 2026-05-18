@@ -104,4 +104,46 @@ describe("Query Translation Edge Cases and Hardening", () => {
     });
     expect(resUnconfiguredField).toEqual({ age: 25, active: true, status: true }); // mixed schema + heuristics
   });
+
+  it("should validate and throw for invalid options configurations in translateNaturalQuery", async () => {
+    // Non-object options
+    await expect(translateNaturalQuery("find items", "invalid-options" as any)).rejects.toThrow();
+
+    // OpenAI provider without API Key
+    await expect(translateNaturalQuery("find items", { provider: "openai" })).rejects.toThrow(
+      /API Key is required/
+    );
+  });
+
+  it("should honor explicit string schema casting and not fallback to auto-heuristics", () => {
+    // Without schema: auto-casts to number
+    const resNoSchema = parseOfflineNaturalQuery("code is 123");
+    expect(resNoSchema).toEqual({ code: 123 });
+
+    // With explicit string schema: preserves string type
+    const schema = { code: "string" as const };
+    const resWithSchema = parseOfflineNaturalQuery("code is 123", schema);
+    expect(resWithSchema).toEqual({ code: "123" });
+  });
+
+  it("should not cast numeric strings with leading zeros using auto-heuristics", () => {
+    // Values with leading zeros (e.g., zip codes, phone numbers, identifiers)
+    const resLeadingZeros = parseOfflineNaturalQuery("zipcode is 08540 and phone is 012345");
+    expect(resLeadingZeros).toEqual({ zipcode: "08540", phone: "012345" });
+
+    // Single zero should still be cast to number 0
+    const resSingleZero = parseOfflineNaturalQuery("price is 0");
+    expect(resSingleZero).toEqual({ price: 0 });
+  });
+
+  it("should handle invalid schemaContext gracefully without throwing runtime errors", () => {
+    const resInvalidSchema1 = parseOfflineNaturalQuery("age is 21", null as any);
+    expect(resInvalidSchema1).toEqual({ age: 21 });
+
+    const resInvalidSchema2 = parseOfflineNaturalQuery("age is 21", "invalid" as any);
+    expect(resInvalidSchema2).toEqual({ age: 21 });
+
+    const resInvalidSchema3 = parseOfflineNaturalQuery("age is 21", [] as any);
+    expect(resInvalidSchema3).toEqual({ age: 21 });
+  });
 });
