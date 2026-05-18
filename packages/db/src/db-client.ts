@@ -13,6 +13,7 @@ import { wrapIDBOperation } from "./internal/wrap-idb-operation.js";
 import type { BackupExportOptions, BackupSnapshot } from "./backup.js";
 import { GraphClient } from "./graph-client.js";
 import type { GraphNode, GraphEdge } from "zerithdb-core";
+import { generateKeyBetween, rebalanceKeys } from "zerithdb-utils";
 /**
  * A handle to a single named collection within the ZerithDB local database.
  * All operations are async and backed by IndexedDB.
@@ -227,6 +228,152 @@ export class CollectionClient<T extends Record<string, any> = Record<string, any
         });
 
         return total;
+      }
+    );
+  }
+
+  /**
+   * Move a document with `docId` strictly between `beforeId` and `afterId` using fractional indexing.
+   * Automatically handles start, middle, and end insertion. Updates the document in the local IndexedDB.
+   * If the newly generated string index exceeds 50 characters, triggers a background re-balance.
+   *
+   * @param docId - The ID of the document to move
+   * @param beforeId - The ID of the document before the target position (null if moving to start)
+   * @param afterId - The ID of the document after the target position (null if moving to end)
+   * @param orderKey - The document key where fractional index is stored (defaults to "_order")
+   * @returns The generated fractional index string key
+   */
+  async moveBetween(
+    docId: string,
+    beforeId: string | null,
+    afterId: string | null,
+    orderKey = "_order"
+  ): Promise<string> {
+    if (docId === beforeId || docId === afterId) {
+      throw new ZerithDBError(
+        ErrorCode.ASSERTION_FAILED,
+        "Cannot move a document relative to itself"
+      );
+    }
+
+    return wrapIDBOperation(
+      ErrorCode.DB_WRITE_FAILED,
+      `Failed to move document "${docId}" in collection "${this.collectionName}"`,
+      async () => {
+        // Fetch target document
+        const doc = await this.findById(docId);
+        if (!doc) {
+          throw new ZerithDBError(
+            ErrorCode.DB_WRITE_FAILED,
+            `Target document "${docId}" not found in collection "${this.collectionName}"`
+          );
+        }
+
+        // Fetch boundary documents
+        const beforeDoc = beforeId ? await this.findById(beforeId) : null;
+        if (beforeId && !beforeDoc) {
+          throw new ZerithDBError(
+            ErrorCode.DB_WRITE_FAILED,
+            `Boundary document (before) "${beforeId}" not found in collection "${this.collectionName}"`
+          );
+        }
+
+        const afterDoc = afterId ? await this.findById(afterId) : null;
+        if (afterId && !afterDoc) {
+          throw new ZerithDBError(
+            ErrorCode.DB_WRITE_FAILED,
+            `Boundary document (after) "${afterId}" not found in collection "${this.collectionName}"`
+          );
+        }
+
+        // Self-healing: if any document lacks an order key, initialize all order keys in the collection
+        const hasMissingOrder =
+          !(orderKey in doc) ||
+          (beforeDoc && !(orderKey in beforeDoc)) ||
+          (afterDoc && !(orderKey in afterDoc));
+
+        let currentBeforeDoc = beforeDoc;
+        let currentAfterDoc = afterDoc;
+
+        if (hasMissingOrder) {
+          await this.rebalance(orderKey);
+
+          // Re-fetch all documents to get their newly assigned order keys
+          const reFetchedDoc = await this.findById(docId);
+          if (reFetchedDoc) {
+            Object.assign(doc, reFetchedDoc);
+          }
+          if (beforeId) {
+            currentBeforeDoc = (await this.findById(beforeId)) ?? null;
+          }
+          if (afterId) {
+            currentAfterDoc = (await this.findById(afterId)) ?? null;
+          }
+        }
+
+        // Extract current fractional keys
+        const beforeOrder = currentBeforeDoc ? (currentBeforeDoc[orderKey] as string) : null;
+        const afterOrder = currentAfterDoc ? (currentAfterDoc[orderKey] as string) : null;
+
+        // Generate deterministic lexical midpoint
+        const newOrder = generateKeyBetween(beforeOrder, afterOrder);
+
+        // Save updated document to database
+        const now = Date.now();
+        await this.table.update(docId, {
+          [orderKey]: newOrder,
+          _updatedAt: now,
+        } as any);
+
+        // Trigger asynchronous background re-balance if string length grows too long
+        if (newOrder.length > 50) {
+          this.rebalance(orderKey).catch((err) => {
+            console.error(`Background rebalance failed for collection "${this.collectionName}":`, err);
+          });
+        }
+
+        return newOrder;
+      }
+    );
+  }
+
+  /**
+   * Rebalances the fractional indexes in the collection to prevent long key strings.
+   * Sorts all documents by their current fractional index key and re-allocates evenly spaced keys.
+   *
+   * @param orderKey - The key where fractional index is stored (defaults to "_order")
+   */
+  async rebalance(orderKey = "_order"): Promise<void> {
+    return wrapIDBOperation(
+      ErrorCode.DB_WRITE_FAILED,
+      `Failed to rebalance order keys in collection "${this.collectionName}"`,
+      async () => {
+        const allDocs = await this.table.toArray();
+
+        // Sort documents by current orderKey, falling back to creation time and ID to guarantee deterministic output
+        allDocs.sort((a, b) => {
+          const valA = (a[orderKey] as string) ?? "";
+          const valB = (b[orderKey] as string) ?? "";
+          if (valA < valB) return -1;
+          if (valA > valB) return 1;
+
+          const timeA = a._createdAt ?? 0;
+          const timeB = b._createdAt ?? 0;
+          if (timeA !== timeB) return timeA - timeB;
+
+          return a._id.localeCompare(b._id);
+        });
+
+        const balancedKeys = rebalanceKeys(allDocs.length);
+        const now = Date.now();
+
+        const updates = allDocs.map((doc, idx) => ({
+          ...doc,
+          [orderKey]: balancedKeys[idx],
+          _updatedAt: now,
+        }));
+
+        await this.table.bulkPut(updates);
       }
     );
   }
