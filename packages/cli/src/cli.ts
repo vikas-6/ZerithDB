@@ -9,6 +9,7 @@ import { lintCommand } from "./commands/lint.js";
 import { formatCommand } from "./commands/format.js";
 import { maintenanceCommand } from "./commands/maintenance.js";
 import { purgeCommand } from "./purge.js";
+import { generateCommand } from "./commands/generate.js";
 
 import { checkConnectivity } from "./checkConnectivity.js";
 
@@ -69,6 +70,19 @@ async function main() {
     .command("maintenance <status>")
     .description("Toggle maintenance mode for the signaling server (on/off)")
     .action(maintenanceCommand);
+
+  // GENERATE (aliased to seed)
+  program
+    .command("generate")
+    .alias("seed")
+    .description("Generate semantically accurate mock JSON data using local AI or offline heuristics")
+    .option("-p, --prompt <prompt>", "Natural language instruction for the data seeder")
+    .option("-c, --count <count>", "Number of records to generate", "10")
+    .option("-s, --schema <schema-path>", "Optional path to TypeScript schema, Zod schema, or JSON schema file")
+    .option("-o, --output <output-path>", "Output JSON file path", "./mock-data.json")
+    .option("--provider <provider>", "Generation provider: 'local' (offline engine) or 'ollama' (local LLM)", "local")
+    .option("--model <model>", "Ollama model to use if using ollama provider", "llama3")
+    .action(generateCommand);
 
   // PURGE
   program
