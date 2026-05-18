@@ -77,9 +77,9 @@ describe("Collection moveBetween() and fractional indexing", () => {
     const res3 = await list.insert({ name: "3" });
 
     // Set manually bloated fractional keys to simulate collision extensions
-    await list.table.update(res1.id, { _order: "faaaaa" });
-    await list.table.update(res2.id, { _order: "faaaab" });
-    await list.table.update(res3.id, { _order: "faaaac" });
+    await (list as any).table.update(res1.id, { _order: "faaaaa" });
+    await (list as any).table.update(res2.id, { _order: "faaaab" });
+    await (list as any).table.update(res3.id, { _order: "faaaac" });
 
     // Perform manual rebalance
     await list.rebalance();
